@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from pinecone import Pinecone
 import voyageai
 import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -28,6 +30,15 @@ index = pc.Index(INDEX_NAME)
 # ============================
 
 app = FastAPI(title="API Inteligente Kaizen")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # libera qualquer site (depois podemos restringir)
+    allow_credentials=True,
+    allow_methods=["*"],  # GET, POST, OPTIONS etc
+    allow_headers=["*"],  # Content-Type, Authorization etc
+)
+
 
 class QueryRequest(BaseModel):
     pergunta: str
