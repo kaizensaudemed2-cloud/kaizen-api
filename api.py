@@ -2,6 +2,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from pinecone import Pinecone
 import voyageai
+import os
+
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 # ============================
 # 🔑 CONFIGURAÇÕES
