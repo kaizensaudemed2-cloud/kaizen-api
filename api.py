@@ -1,20 +1,19 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 from pinecone import Pinecone
 import voyageai
+from openai import OpenAI
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+
+# ============================
+# 🔑 VARIÁVEIS DE AMBIENTE
+# ============================
 
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ============================
-# 🔑 CONFIGURAÇÕES
-# ============================
-
-VOYAGE_API_KEY = "pa-mL3exuk-YHYEJVO1Fup8Mmh8Vm6y_jmln8ifoYtwCgb"
-PINECONE_API_KEY = "pcsk_4qiBEA_SqccbsbWmMZXCkMi21mqNEYMFbbjZqbqKK8KFz55CoMjREjLQ8vABuAWHsVLQaj"
 INDEX_NAME = "kaizen-index"
 
 # ============================
@@ -22,8 +21,11 @@ INDEX_NAME = "kaizen-index"
 # ============================
 
 voyage = voyageai.Client(api_key=VOYAGE_API_KEY)
+
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================
 # 🚀 FASTAPI
@@ -33,26 +35,33 @@ app = FastAPI(title="API Inteligente Kaizen")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # libera qualquer site (depois podemos restringir)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # GET, POST, OPTIONS etc
-    allow_headers=["*"],  # Content-Type, Authorization etc
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# ============================
+# 📩 MODELO DE REQUEST
+# ============================
 
 class QueryRequest(BaseModel):
     pergunta: str
     top_k: int = 5
 
+# ============================
+# 🔍 ENDPOINT COM RAG
+# ============================
+
 @app.post("/buscar")
 def buscar_produtos(req: QueryRequest):
-    # 1. Gerar embedding da pergunta
+    # 1️⃣ Embedding da pergunta
     embedding = voyage.embed(
         texts=[req.pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
 
-    # 2. Buscar no Pinecone
+    # 2️⃣ Busca no Pinecone
     resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
@@ -60,7 +69,6 @@ def buscar_produtos(req: QueryRequest):
     )
 
     produtos = []
-    nomes = []
 
     for match in resultados["matches"]:
         meta = match["metadata"]
@@ -70,26 +78,58 @@ def buscar_produtos(req: QueryRequest):
             "score": round(match["score"], 4)
         })
 
-        if meta.get("nome") or meta.get("Nome"):
-            nomes.append(meta.get("nome") or meta.get("Nome"))
-
-    # 3. Criar mensagem humanizada
+    # 3️⃣ Criar CONTEXTO para o GPT (RAG)
     if produtos:
-        mensagem = (
-            f"Com base no que você procura ({req.pergunta}), "
-            f"estes produtos naturais da Kaizen podem ser relevantes:\n\n"
-            + "\n".join([f"• {nome}" for nome in nomes[:5]])
-            + "\n\n⚠️ Importante: os produtos naturais auxiliam o bem-estar, "
-              "mas não substituem orientação médica ou tratamento profissional."
-        )
+        contexto = "\n".join([
+            f"- {p['nome']}: {p['descricao']}"
+            for p in produtos
+        ])
     else:
-        mensagem = (
-            "No momento não encontramos produtos diretamente relacionados "
-            "à sua busca. Caso queira, tente usar outras palavras."
-        )
+        contexto = "Nenhum produto encontrado."
+
+    prompt = f"""
+Você é um assistente virtual da Kaizen Saúde Integral, especializado em produtos naturais.
+
+Pergunta do cliente:
+"{req.pergunta}"
+
+Produtos disponíveis no catálogo:
+{contexto}
+
+Regras:
+- Responda apenas com base nos produtos listados
+- Não invente benefícios
+- Linguagem simples e humana
+- Inclua aviso de que produtos naturais não substituem orientação médica
+"""
+
+    # 4️⃣ OpenAI gera a resposta
+    resposta = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Você é um especialista em bem-estar natural."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.6
+    )
+
+    mensagem_final = resposta.choices[0].message.content
 
     return {
         "pergunta": req.pergunta,
-        "mensagem": mensagem,
+        "mensagem": mensagem_final,
         "produtos": produtos
+    }
+@app.get("/teste-openai")
+def teste_openai():
+    resposta = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": "Responda apenas: OpenAI está funcionando"}
+        ]
+    )
+
+    return {
+        "status": "ok",
+        "resposta": resposta.choices[0].message.content
     }
