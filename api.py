@@ -146,3 +146,16 @@ Regras obrigatórias:
         "mensagem": mensagem_final,
         "produtos": produtos
     }
+@app.get("/teste-openai")
+def teste_openai():
+    resposta = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": "Responda apenas: OpenAI está funcionando"}
+        ]
+    )
+
+    return {
+        "status": "ok",
+        "resposta": resposta.choices[0].message.content
+    }
