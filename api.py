@@ -55,6 +55,15 @@ class QueryRequest(BaseModel):
 
 @app.post("/buscar")
 def buscar_produtos(req: QueryRequest):
+
+    # 🔎 0️⃣ Validação rápida da pergunta
+    if len(req.pergunta.strip()) < 3:
+        return {
+            "pergunta": req.pergunta,
+            "mensagem": "Pode me explicar melhor sua dúvida?",
+            "produtos": []
+        }
+
     # 1️⃣ Embedding da pergunta
     embedding = voyage.embed(
         texts=[req.pergunta],
@@ -68,27 +77,43 @@ def buscar_produtos(req: QueryRequest):
         include_metadata=True
     )
 
+    SCORE_MINIMO = 0.78
     produtos = []
 
     for match in resultados["matches"]:
+        if match["score"] < SCORE_MINIMO:
+            continue
+
         meta = match["metadata"]
+
         produtos.append({
             "nome": meta.get("nome") or meta.get("Nome"),
             "descricao": meta.get("descricao") or meta.get("Descrição"),
             "score": round(match["score"], 4)
         })
 
-    # 3️⃣ Criar CONTEXTO para o GPT (RAG)
-    if produtos:
-        contexto = "\n".join([
-            f"- {p['nome']}: {p['descricao']}"
-            for p in produtos
-        ])
-    else:
-        contexto = "Nenhum produto encontrado."
+    # 🚫 Nenhum produto relevante
+    if not produtos:
+        return {
+            "pergunta": req.pergunta,
+            "mensagem": (
+                "Não encontrei produtos do nosso catálogo relacionados a essa dúvida. "
+                "Se quiser, tente usar outras palavras ou perguntar sobre bem-estar, chás, suplementos ou produtos naturais."
+            ),
+            "produtos": []
+        }
+
+    # 🔽 Limitar a 3 produtos
+    produtos = produtos[:3]
+
+    # 3️⃣ Contexto RAG
+    contexto = "\n".join([
+        f"- {p['nome']}: {p['descricao']}"
+        for p in produtos
+    ])
 
     prompt = f"""
-Você é um assistente virtual da Kaizen Saúde Integral, especializado em produtos naturais.
+Você é um assistente virtual da Kaizen Saúde Integral.
 
 Pergunta do cliente:
 "{req.pergunta}"
@@ -96,40 +121,28 @@ Pergunta do cliente:
 Produtos disponíveis no catálogo:
 {contexto}
 
-Regras:
-- Responda apenas com base nos produtos listados
-- Não invente benefícios
-- Linguagem simples e humana
+Regras obrigatórias:
+- Responda SOMENTE com base nos produtos listados
+- Se os produtos não resolverem diretamente a dúvida, explique isso
+- NÃO invente benefícios
+- Linguagem simples, acolhedora e profissional
 - Inclua aviso de que produtos naturais não substituem orientação médica
 """
 
-    # 4️⃣ OpenAI gera a resposta
+    # 4️⃣ OpenAI
     resposta = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Você é um especialista em bem-estar natural."},
+            {"role": "system", "content": "Você é um especialista em bem-estar natural e atendimento humanizado."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.6
+        temperature=0.4
     )
 
-    mensagem_final = resposta.choices[0].message.content
+    mensagem_final = resposta.choices[0].message.content.strip()
 
     return {
         "pergunta": req.pergunta,
         "mensagem": mensagem_final,
         "produtos": produtos
-    }
-@app.get("/teste-openai")
-def teste_openai():
-    resposta = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": "Responda apenas: OpenAI está funcionando"}
-        ]
-    )
-
-    return {
-        "status": "ok",
-        "resposta": resposta.choices[0].message.content
     }
