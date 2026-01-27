@@ -25,10 +25,10 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
 # ============================
-# 📥 CSV
+# 📥 xlsx
 # ============================
 
-df = pd.read_csv("data/produtos.csv")
+df = pd.read_excel("data/produtos.xlsx")
 print(f"📦 Produtos encontrados: {len(df)}")
 
 # ============================
