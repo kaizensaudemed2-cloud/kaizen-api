@@ -42,3 +42,10 @@ tzdata==2025.2
 urllib3==2.5.0
 voyageai==0.2.4
 yarl==1.22.0
+fastapi
+uvicorn
+python-dotenv
+pandas
+openpyxl
+pinecone-client
+voyageai
