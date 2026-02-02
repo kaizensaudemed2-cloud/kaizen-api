@@ -15,6 +15,7 @@ VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 INDEX_NAME = "kaizen-index"
+NAMESPACE = "producao_v1"
 
 # ============================
 # 🔧 CLIENTES
@@ -32,12 +33,12 @@ df = pd.read_excel("data/produtos.xlsx")
 print(f"📦 Produtos encontrados: {len(df)}")
 
 # ============================
-# ⚠️ CONFIGURAÇÕES DE SEGURANÇA
+# ⚠️ CONFIGURAÇÕES
 # ============================
 
 BATCH_SIZE = 5          # 🔴 EXTREMAMENTE CONSERVADOR
 DELAY = 70              # segundos (garante < 3 RPM)
-MAX_PRODUTOS = 20   # use 100 para teste, ou None para todos
+MAX_PRODUTOS = 10  # use 100 para teste, ou None para todos
 
 # ============================
 # 🚀 INDEXAÇÃO
@@ -53,6 +54,9 @@ for i, row in df.iterrows():
     short_desc = str(row.get("Short Description", "")).strip()
     categoria = str(row.get("Categorias de produto", "")).strip()
 
+    if not titulo:
+        continue
+
     texto = f"{titulo}. {short_desc}. Categoria: {categoria}"
 
     try:
@@ -63,27 +67,28 @@ for i, row in df.iterrows():
 
         embedding = response.embeddings[0]
 
+        id_produto = str(row.get("ID", f"produto-{i}")).strip()
+
         index.upsert(
             vectors=[{
-                "id": f"produto-{i}",
+                "id": id_produto,
                 "values": embedding,
                 "metadata": {
                     "nome": titulo,
                     "descricao": short_desc,
                     "categoria": categoria
                 }
-            }]
+            }],
+            namespace=NAMESPACE
         )
 
         produtos_processados += 1
         print(f"✅ Produto {produtos_processados} indexado")
 
-        print("⏳ Aguardando rate limit...")
         time.sleep(DELAY)
 
     except Exception as e:
         print("❌ Erro ao indexar produto:", e)
-        print("⏸️ Aguardando 120s antes de tentar novamente...")
         time.sleep(120)
 
 print("🎉 Indexação finalizada!")
