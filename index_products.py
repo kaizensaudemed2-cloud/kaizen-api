@@ -52,6 +52,7 @@ for i, row in df.iterrows():
 
     titulo = str(row.get("Title", "")).strip()
     short_desc = str(row.get("Short Description", "")).strip()
+    description = str(row.get("Description", "")).strip()
     categoria = str(row.get("Categorias de produto", "")).strip()
 
     if not titulo:
@@ -75,7 +76,8 @@ for i, row in df.iterrows():
                 "values": embedding,
                 "metadata": {
                     "nome": titulo,
-                    "descricao": short_desc,
+                    "descricao": description,
+                    "descricao curta": short_desc,
                     "categoria": categoria
                 }
             }],

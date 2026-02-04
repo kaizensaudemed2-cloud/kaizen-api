@@ -4,11 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pinecone import Pinecone
 import voyageai
 from openai import OpenAI
+from dotenv import load_dotenv
 import os
 
 # ============================
 # 🔑 VARIÁVEIS DE AMBIENTE
 # ============================
+
+load_dotenv()  # 🔥 ESSENCIAL PARA AMBIENTE LOCAL
 
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -17,6 +20,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 INDEX_NAME = "kaizen-index"
 SCORE_MINIMO = 0.65
 MAX_PRODUTOS_RESPOSTA = 3
+
+# ============================
+# 🔒 VALIDAÇÃO DE CHAVES
+# ============================
+
+if not VOYAGE_API_KEY:
+    raise RuntimeError("VOYAGE_API_KEY não configurada")
+
+if not PINECONE_API_KEY:
+    raise RuntimeError("PINECONE_API_KEY não configurada")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY não configurada")
 
 # ============================
 # 🔧 CLIENTES
@@ -60,7 +76,6 @@ def buscar_produtos(req: QueryRequest):
 
     pergunta = req.pergunta.strip()
 
-    # 0️⃣ Validação mínima
     if len(pergunta) < 3:
         return {
             "found": False,
@@ -69,13 +84,13 @@ def buscar_produtos(req: QueryRequest):
             "produtos": []
         }
 
-    # 1️⃣ Gerar embedding da pergunta
+    # 1️⃣ Embedding
     embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
 
-    # 2️⃣ Buscar no Pinecone
+    # 2️⃣ Busca Pinecone
     resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
@@ -87,7 +102,6 @@ def buscar_produtos(req: QueryRequest):
     for match in resultados.get("matches", []):
         score = match.get("score", 0)
 
-        # 🔒 Regra dura: score mínimo
         if score < SCORE_MINIMO:
             continue
 
@@ -95,30 +109,27 @@ def buscar_produtos(req: QueryRequest):
 
         produtos.append({
             "nome": meta.get("nome") or meta.get("Nome"),
-            "descricao": meta.get("descricao") or meta.get("Descrição"),
+            "descricao": meta.get("Description") or meta.get("Short Description"),
             "score": round(score, 4)
         })
 
-    # 🔽 Ordenar por relevância
     produtos.sort(key=lambda x: x["score"], reverse=True)
 
-    # 🚫 Nenhum produto realmente relacionado
     if not produtos:
         return {
             "found": False,
             "pergunta": pergunta,
             "mensagem": (
-                "Não encontrei produtos do nosso catálogo que estejam realmente "
-                "relacionados à sua dúvida."
+                "Não encontrei produtos do nosso catálogo que estejam "
+                "realmente relacionados à sua dúvida."
             ),
             "produtos": []
         }
 
-    # 🔢 Limitar quantidade final
     produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
     # ============================
-    # 🧠 RAG (somente se houver produto relevante)
+    # 🧠 RAG
     # ============================
 
     contexto = "\n".join([
@@ -127,7 +138,8 @@ def buscar_produtos(req: QueryRequest):
     ])
 
     prompt = f"""
-Você é um assistente virtual da Kaizen Saúde Integral, precisa se comportar como um especialista em produtos naturais, sua linguagem não pode ser de doutor mas tem que passar uma impressão de conversa mais humanizada.
+Você é um assistente virtual da Kaizen Saúde Integral.
+Fale de forma humanizada, acessível e profissional.
 
 Pergunta do cliente:
 "{pergunta}"
@@ -137,9 +149,8 @@ Produtos disponíveis no catálogo:
 
 Regras obrigatórias:
 - Responda SOMENTE com base nos produtos listados
-- Se os produtos não resolverem diretamente a dúvida, explique isso com clareza
-- NÃO invente benefícios, indicações ou efeitos
-- Linguagem simples, acolhedora e profissional
+- Não invente benefícios ou indicações
+- Linguagem simples e acolhedora
 - Inclua aviso de que produtos naturais não substituem orientação médica
 """
 
