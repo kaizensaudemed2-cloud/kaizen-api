@@ -109,7 +109,7 @@ def buscar_produtos(req: QueryRequest):
 
         produtos.append({
             "nome": meta.get("nome") or meta.get("Nome"),
-            "descricao": meta.get("Description") or meta.get("Short Description"),
+            "descricao": meta.get("descrição") or meta.get("Descrição"),
             "score": round(score, 4)
         })
 
