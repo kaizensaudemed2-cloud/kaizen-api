@@ -58,7 +58,7 @@ for i, row in df.iterrows():
     if not titulo:
         continue
 
-    texto = f"{titulo}. {short_desc}. Categoria: {categoria}"
+    texto = f"{titulo}. {short_desc}. {description} Categoria: {categoria}"
 
     try:
         response = voyage.embed(

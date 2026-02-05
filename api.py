@@ -18,7 +18,7 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 INDEX_NAME = "kaizen-index"
-SCORE_MINIMO = 0.65
+SCORE_MINIMO = 0.75
 MAX_PRODUTOS_RESPOSTA = 3
 
 # ============================
