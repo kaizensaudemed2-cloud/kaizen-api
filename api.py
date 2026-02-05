@@ -18,7 +18,7 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 INDEX_NAME = "kaizen-index"
-SCORE_MINIMO = 0.75
+SCORE_MINIMO = 0.6
 MAX_PRODUTOS_RESPOSTA = 3
 
 # ============================
@@ -94,7 +94,8 @@ def buscar_produtos(req: QueryRequest):
     resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
-        include_metadata=True
+        include_metadata=True,
+        namespace="producao_v1"
     )
 
     produtos = []
@@ -109,7 +110,11 @@ def buscar_produtos(req: QueryRequest):
 
         produtos.append({
             "nome": meta.get("nome") or meta.get("Nome"),
-            "descricao": meta.get("descrição") or meta.get("Descrição"),
+            "descricao": meta.get("descrição") 
+            or meta.get("Descrição")
+            or meta.get("descricao")
+            or meta.get("description")
+            or meta.get("descricao curta"),
             "score": round(score, 4)
         })
 

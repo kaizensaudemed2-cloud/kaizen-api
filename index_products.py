@@ -38,7 +38,7 @@ print(f"📦 Produtos encontrados: {len(df)}")
 
 BATCH_SIZE = 5          # 🔴 EXTREMAMENTE CONSERVADOR
 DELAY = 70              # segundos (garante < 3 RPM)
-MAX_PRODUTOS = 10  # use 100 para teste, ou None para todos
+MAX_PRODUTOS = 5  # use 100 para teste, ou None para todos
 
 # ============================
 # 🚀 INDEXAÇÃO
@@ -58,7 +58,17 @@ for i, row in df.iterrows():
     if not titulo:
         continue
 
-    texto = f"{titulo}. {short_desc}. {description} Categoria: {categoria}"
+    texto = f"""
+    Produto: {titulo} 
+
+    Descrição Curta:
+    {short_desc}
+
+    Descrição completa
+    {description}
+    
+    Categoria: 
+    {categoria}"""
 
     try:
         response = voyage.embed(
