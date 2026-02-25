@@ -6,6 +6,7 @@ import voyageai
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+from supabase import create_client, Client
 
 # ============================
 # 🔑 VARIÁVEIS DE AMBIENTE
@@ -20,6 +21,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 INDEX_NAME = "kaizen-index"
 SCORE_MINIMO = 0.6
 MAX_PRODUTOS_RESPOSTA = 3
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+    raise RuntimeError("Supabase não configurado")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 # ============================
 # 🔒 VALIDAÇÃO DE CHAVES
@@ -63,34 +72,68 @@ app.add_middleware(
 # 📩 MODELO DE REQUEST
 # ============================
 
-class QueryRequest(BaseModel):
+class ChatRequest(BaseModel):
+    user_id: str
     pergunta: str
+    conversation_id: str | None = None
     top_k: int = 5
 
 # ============================
 # 🔍 ENDPOINT /buscar
 # ============================
 
-@app.post("/buscar")
-def buscar_produtos(req: QueryRequest):
+@app.post("/chat")
+def chat(req: ChatRequest):
 
     pergunta = req.pergunta.strip()
 
     if len(pergunta) < 3:
         return {
             "found": False,
-            "pergunta": pergunta,
-            "mensagem": "Pode me explicar um pouco melhor sua dúvida?",
-            "produtos": []
+            "mensagem": "Pode me explicar um pouco melhor sua dúvida?"
         }
 
-    # 1️⃣ Embedding
+    # =========================
+    # Criar conversa se necessário
+    # =========================
+    conversation_id = req.conversation_id
+
+    if not conversation_id:
+        response = supabase.table("conversations").insert({
+            "user_id": req.user_id
+        }).execute()
+        conversation_id = response.data[0]["id"]
+
+    # =========================
+    # Salvar pergunta do usuário
+    # =========================
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": "user",
+        "content": pergunta
+    }).execute()
+
+    # =========================
+    # Buscar histórico
+    # =========================
+    historico = buscar_historico(conversation_id)
+
+    historico_formatado = "\n".join([
+        f"{msg['role']}: {msg['content']}"
+        for msg in historico
+    ])
+
+    # =========================
+    # Embedding da pergunta
+    # =========================
     embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
 
-    # 2️⃣ Busca Pinecone
+    # =========================
+    # Busca Pinecone
+    # =========================
     resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
@@ -108,77 +151,118 @@ def buscar_produtos(req: QueryRequest):
 
         meta = match.get("metadata", {})
 
+        descricao = (
+            meta.get("descricao")
+            or meta.get("descricao curta")
+            or ""
+        )
+
         produtos.append({
-            "nome": meta.get("nome") or meta.get("Nome"),
-            "descricao": meta.get("descrição") 
-            or meta.get("Descrição")
-            or meta.get("descricao")
-            or meta.get("description")
-            or meta.get("descricao curta"),
+            "nome": meta.get("nome"),
+            "descricao": descricao,
             "score": round(score, 4)
         })
 
     produtos.sort(key=lambda x: x["score"], reverse=True)
-
-    if not produtos:
-        return {
-            "found": False,
-            "pergunta": pergunta,
-            "mensagem": (
-                "Não encontrei produtos do nosso catálogo que estejam "
-                "realmente relacionados à sua dúvida."
-            ),
-            "produtos": []
-        }
-
     produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
-    # ============================
-    # 🧠 RAG
-    # ============================
+    # =========================
+    # Fallback
+    # =========================
+    if not produtos:
+        mensagem = (
+            "Não encontrei produtos específicos para isso, "
+            "mas posso te ajudar melhor se me contar um pouco mais "
+            "sobre o que está sentindo 😊"
+        )
 
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": mensagem
+        }).execute()
+
+        return {
+            "conversation_id": conversation_id,
+            "found": False,
+            "mensagem": mensagem
+        }
+
+    # =========================
+    # Montar contexto
+    # =========================
     contexto = "\n".join([
         f"- {p['nome']}: {p['descricao']}"
         for p in produtos
     ])
 
     prompt = f"""
-Você é um assistente virtual da Kaizen Saúde Integral.
-Fale de forma humanizada, acessível e profissional.
+Histórico da conversa:
+{historico_formatado}
 
-Pergunta do cliente:
+Pergunta atual:
 "{pergunta}"
 
-Produtos disponíveis no catálogo:
+Produtos disponíveis:
 {contexto}
 
-Regras obrigatórias:
-- Responda SOMENTE com base nos produtos listados
-- Não invente benefícios ou indicações
-- Linguagem simples e acolhedora
-- Inclua aviso de que produtos naturais não substituem orientação médica
+Regras:
+- Responda somente com base nos produtos listados
+- Não invente benefícios
+- Linguagem humanizada
+- Inclua aviso de que não substitui orientação médica
 """
 
     resposta = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": "Você é um especialista em bem-estar natural e atendimento humanizado."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
+            {"role": "system", "content": "Você é um especialista em bem-estar natural e atendimento acolhedor."},
+            {"role": "user", "content": prompt}
         ],
         temperature=0.4
     )
 
     mensagem_final = resposta.choices[0].message.content.strip()
 
+    # =========================
+    # Salvar resposta
+    # =========================
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": mensagem_final
+    }).execute()
+
     return {
+        "conversation_id": conversation_id,
         "found": True,
-        "pergunta": pergunta,
         "mensagem": mensagem_final,
         "produtos": produtos
     }
+
+def salvar_mensagem(conversation_id, role, content):
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content
+    }).execute()
+
+def criar_conversa(user_id):
+    response = supabase.table("conversations").insert({
+        "user_id": user_id
+    }).execute()
+
+    return response.data[0]["id"]
+
+def buscar_historico(conversation_id, limite=6):
+    response = (
+        supabase
+        .table("messages")
+        .select("*")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .limit(limite)
+        .execute()
+    )
+    
+    return response.data
