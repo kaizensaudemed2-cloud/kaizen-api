@@ -96,13 +96,16 @@ def chat(req: ChatRequest):
     # =========================
     # Criar conversa se necessário
     # =========================
+    import uuid
     conversation_id = req.conversation_id
 
-    if not conversation_id:
-        response = supabase.table("conversations").insert({
-            "user_id": req.user_id
-        }).execute()
-        conversation_id = response.data[0]["id"]
+    if not conversation_id or conversation_id == "string":
+    conversation_id = str(uuid.uuid4())
+
+    supabase.table("conversations").insert({
+        "id": conversation_id,
+        "user_id": user_id
+    }).execute()
 
     # =========================
     # Salvar pergunta do usuário
