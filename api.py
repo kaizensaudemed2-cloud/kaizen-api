@@ -131,16 +131,16 @@ embedding = voyage.embed(
     # =========================
     # Busca Pinecone
     # =========================
-    resultados = index.query(
+resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
         include_metadata=True,
         namespace="producao_v1"
     )
 
-    produtos = []
+produtos = []
 
-    for match in resultados.get("matches", []):
+for match in resultados.get("matches", []):
         score = match.get("score", 0)
 
         if score < SCORE_MINIMO:
@@ -161,12 +161,12 @@ embedding = voyage.embed(
         })
 
     produtos.sort(key=lambda x: x["score"], reverse=True)
-    produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
+produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
     # =========================
     # Fallback
     # =========================
-    if not produtos:
+if not produtos:
         mensagem = (
             "Não encontrei produtos específicos para isso, "
             "mas posso te ajudar melhor se me contar um pouco mais "
@@ -193,7 +193,7 @@ embedding = voyage.embed(
         for p in produtos
     ])
 
-    prompt = f"""
+prompt = f"""
 Histórico da conversa:
 {historico_formatado}
 
@@ -210,7 +210,7 @@ Regras:
 - Inclua aviso de que não substitui orientação médica
 """
 
-    resposta = openai_client.chat.completions.create(
+resposta = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "Você é um especialista em bem-estar natural e atendimento acolhedor."},
@@ -219,18 +219,18 @@ Regras:
         temperature=0.4
     )
 
-    mensagem_final = resposta.choices[0].message.content.strip()
+mensagem_final = resposta.choices[0].message.content.strip()
 
     # =========================
     # Salvar resposta
     # =========================
-    supabase.table("messages").insert({
+supabase.table("messages").insert({
         "conversation_id": conversation_id,
         "role": "assistant",
         "content": mensagem_final
     }).execute()
 
-    return {
+return {
         "conversation_id": conversation_id,
         "found": True,
         "mensagem": mensagem_final,
