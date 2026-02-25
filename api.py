@@ -123,7 +123,7 @@ salvar_mensagem(conversation_id, "user", pergunta)
     # =========================
     # Embedding da pergunta
     # =========================
-    embedding = voyage.embed(
+embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
