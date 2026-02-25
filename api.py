@@ -96,35 +96,29 @@ def chat(req: ChatRequest):
     # =========================
     # Criar conversa se necessário
     # =========================
-    import uuid
-    conversation_id = req.conversation_id
+import uuid
 
-    if not conversation_id or conversation_id == "string":
+conversation_id = req.conversation_id
+user_id = req.user_id
+
+# Criar conversa se necessário
+if not conversation_id or conversation_id == "string":
     conversation_id = str(uuid.uuid4())
-
     supabase.table("conversations").insert({
         "id": conversation_id,
         "user_id": user_id
     }).execute()
 
-    # =========================
-    # Salvar pergunta do usuário
-    # =========================
-    supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "role": "user",
-        "content": pergunta
-    }).execute()
+# Buscar histórico ANTES de salvar nova mensagem
+historico = buscar_historico(conversation_id)
 
-    # =========================
-    # Buscar histórico
-    # =========================
-    historico = buscar_historico(conversation_id)
+historico_formatado = "\n".join([
+    f"{msg['role']}: {msg['content']}"
+    for msg in historico
+])
 
-    historico_formatado = "\n".join([
-        f"{msg['role']}: {msg['content']}"
-        for msg in historico
-    ])
+# Salvar pergunta do usuário
+salvar_mensagem(conversation_id, "user", pergunta)
 
     # =========================
     # Embedding da pergunta
