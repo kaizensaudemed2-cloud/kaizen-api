@@ -33,16 +33,10 @@ if not SUPABASE_URL or not SUPABASE_ANON_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-# ============================
-# 🔒 VALIDAÇÃO DE CHAVES
-# ============================
-
 if not VOYAGE_API_KEY:
     raise RuntimeError("VOYAGE_API_KEY não configurada")
-
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY não configurada")
-
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY não configurada")
 
@@ -51,10 +45,8 @@ if not OPENAI_API_KEY:
 # ============================
 
 voyage = voyageai.Client(api_key=VOYAGE_API_KEY)
-
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
-
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================
@@ -85,6 +77,25 @@ class ChatRequest(BaseModel):
 # 🔍 ENDPOINT /chat (streaming)
 # ============================
 
+SYSTEM_PROMPT = """Você é Kai, o assistente virtual da Kaizen — uma marca de produtos naturais voltada para saúde e bem-estar.
+
+Sua personalidade:
+- Acolhedora, empática e genuinamente curiosa sobre o que o usuário está sentindo
+- Conversa de forma natural, como um amigo que entende muito de saúde natural
+- Nunca parece um catálogo de produtos ou uma lista de vendas
+- Faz perguntas abertas no final das respostas para aprofundar a conversa e entender melhor a necessidade do usuário
+
+Como responder:
+- Responda de forma fluida e humanizada, como uma conversa real
+- Quando houver produtos relevantes no catálogo, mencione-os naturalmente dentro do texto — não como uma lista separada no final
+- Se não encontrar produto específico, responda sobre o tema de saúde/bem-estar de forma útil e pergunte mais sobre a situação da pessoa
+- Sempre termine com uma pergunta ou convite para continuar a conversa
+- Use parágrafos curtos, linguagem leve e evite listas excessivas
+- Nunca invente benefícios de produtos que não existam
+- Sempre inclua de forma natural (não robótica) um lembrete de que suas orientações não substituem acompanhamento médico profissional
+
+Lembre-se: você está tendo uma conversa, não fazendo uma apresentação de produtos."""
+
 @app.post("/chat")
 def chat(req: ChatRequest):
 
@@ -93,7 +104,7 @@ def chat(req: ChatRequest):
     if len(pergunta) < 3:
         def resposta_curta():
             yield f"data: {json.dumps({'type': 'meta', 'conversation_id': '', 'produtos': []})}\n\n"
-            yield f"data: {json.dumps({'type': 'token', 'token': 'Pode me explicar um pouco melhor sua dúvida?'})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'token': 'Pode me contar um pouco mais? Quero entender melhor como posso te ajudar 😊'})}\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(resposta_curta(), media_type="text/event-stream")
 
@@ -111,24 +122,17 @@ def chat(req: ChatRequest):
             "user_id": user_id
         }).execute()
 
-    # Buscar histórico ANTES de salvar nova mensagem
     historico = buscar_historico(conversation_id)
-
-    # Salvar pergunta do usuário
     salvar_mensagem(conversation_id, "user", pergunta)
 
     # =========================
-    # Embedding da pergunta
+    # Embedding + Busca Pinecone
     # =========================
 
     embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
-
-    # =========================
-    # Busca Pinecone
-    # =========================
 
     resultados = index.query(
         vector=embedding,
@@ -138,21 +142,12 @@ def chat(req: ChatRequest):
     )
 
     produtos = []
-
     for match in resultados.get("matches", []):
         score = match.get("score", 0)
-
         if score < SCORE_MINIMO:
             continue
-
         meta = match.get("metadata", {})
-
-        descricao = (
-            meta.get("descricao")
-            or meta.get("descricao curta")
-            or ""
-        )
-
+        descricao = meta.get("descricao") or meta.get("descricao curta") or ""
         produtos.append({
             "nome": meta.get("nome"),
             "descricao": descricao,
@@ -163,54 +158,32 @@ def chat(req: ChatRequest):
     produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
     # =========================
-    # Montar mensagens para o modelo
+    # Montar mensagens
     # =========================
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Você é o Assistente Kaizen, especialista em bem-estar natural e saúde. "
-                "Responda de forma humanizada, acolhedora e clara. "
-                "Quando houver produtos relevantes, apresente-os com seus benefícios reais. "
-                "Você também pode responder dúvidas gerais sobre saúde e bem-estar, mesmo sem produtos específicos. "
-                "Nunca invente benefícios que não existam. "
-                "Sempre inclua um aviso de que suas respostas não substituem orientação médica profissional."
-            )
-        }
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # Adiciona histórico real da conversa no formato OpenAI
     for msg in historico:
-        messages.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
+        messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Monta pergunta atual com contexto de produtos (se houver)
     if produtos:
         contexto = "\n".join([
-            f"- {p['nome']}: {p['descricao']}"
-            for p in produtos
+            f"- {p['nome']}: {p['descricao']}" for p in produtos
         ])
         conteudo_usuario = (
             f"{pergunta}\n\n"
-            f"[Produtos disponíveis no catálogo Kaizen relacionados a essa pergunta:\n{contexto}]"
+            f"[Contexto interno — produtos do catálogo Kaizen relacionados, mencione-os naturalmente se fizer sentido:\n{contexto}]"
         )
     else:
         conteudo_usuario = pergunta
 
-    messages.append({
-        "role": "user",
-        "content": conteudo_usuario
-    })
+    messages.append({"role": "user", "content": conteudo_usuario})
 
     # =========================
-    # Streaming da resposta
+    # Streaming
     # =========================
 
     def stream_resposta():
-        # Primeiro envia metadados (conversation_id e produtos encontrados)
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'produtos': produtos})}\n\n"
 
         resposta_completa = ""
@@ -218,7 +191,7 @@ def chat(req: ChatRequest):
         stream = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.4,
+            temperature=0.5,
             stream=True
         )
 
@@ -228,9 +201,7 @@ def chat(req: ChatRequest):
                 resposta_completa += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
-        # Salva a resposta completa no banco após o streaming terminar
         salvar_mensagem(conversation_id, "assistant", resposta_completa)
-
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_resposta(), media_type="text/event-stream")
@@ -245,12 +216,6 @@ def salvar_mensagem(conversation_id, role, content):
         "role": role,
         "content": content
     }).execute()
-
-def criar_conversa(user_id):
-    response = supabase.table("conversations").insert({
-        "user_id": user_id
-    }).execute()
-    return response.data[0]["id"]
 
 def buscar_historico(conversation_id, limite=10):
     response = (
