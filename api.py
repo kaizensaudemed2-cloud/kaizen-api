@@ -6,13 +6,14 @@ import voyageai
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+import uuid
 from supabase import create_client, Client
 
 # ============================
 # 🔑 VARIÁVEIS DE AMBIENTE
 # ============================
 
-load_dotenv()  # 🔥 ESSENCIAL PARA AMBIENTE LOCAL
+load_dotenv()
 
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -79,7 +80,7 @@ class ChatRequest(BaseModel):
     top_k: int = 5
 
 # ============================
-# 🔍 ENDPOINT /buscar
+# 🔍 ENDPOINT /chat
 # ============================
 
 @app.post("/chat")
@@ -96,34 +97,33 @@ def chat(req: ChatRequest):
     # =========================
     # Criar conversa se necessário
     # =========================
-import uuid
 
-conversation_id = req.conversation_id
-user_id = req.user_id
+    conversation_id = req.conversation_id
+    user_id = req.user_id
 
-# Criar conversa se necessário
-if not conversation_id or conversation_id == "string":
-    conversation_id = str(uuid.uuid4())
-    supabase.table("conversations").insert({
-        "id": conversation_id,
-        "user_id": user_id
-    }).execute()
+    if not conversation_id or conversation_id == "string":
+        conversation_id = str(uuid.uuid4())
+        supabase.table("conversations").insert({
+            "id": conversation_id,
+            "user_id": user_id
+        }).execute()
 
-# Buscar histórico ANTES de salvar nova mensagem
-historico = buscar_historico(conversation_id)
+    # Buscar histórico ANTES de salvar nova mensagem
+    historico = buscar_historico(conversation_id)
 
-historico_formatado = "\n".join([
-    f"{msg['role']}: {msg['content']}"
-    for msg in historico
-])
+    historico_formatado = "\n".join([
+        f"{msg['role']}: {msg['content']}"
+        for msg in historico
+    ])
 
-# Salvar pergunta do usuário
-salvar_mensagem(conversation_id, "user", pergunta)
+    # Salvar pergunta do usuário
+    salvar_mensagem(conversation_id, "user", pergunta)
 
     # =========================
     # Embedding da pergunta
     # =========================
-embedding = voyage.embed(
+
+    embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
     ).embeddings[0]
@@ -131,16 +131,17 @@ embedding = voyage.embed(
     # =========================
     # Busca Pinecone
     # =========================
-resultados = index.query(
+
+    resultados = index.query(
         vector=embedding,
         top_k=req.top_k,
         include_metadata=True,
         namespace="producao_v1"
     )
 
-produtos = []
+    produtos = []
 
-for match in resultados.get("matches", []):
+    for match in resultados.get("matches", []):
         score = match.get("score", 0)
 
         if score < SCORE_MINIMO:
@@ -161,23 +162,20 @@ for match in resultados.get("matches", []):
         })
 
     produtos.sort(key=lambda x: x["score"], reverse=True)
-produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
+    produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
     # =========================
     # Fallback
     # =========================
-if not produtos:
+
+    if not produtos:
         mensagem = (
             "Não encontrei produtos específicos para isso, "
             "mas posso te ajudar melhor se me contar um pouco mais "
             "sobre o que está sentindo 😊"
         )
 
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": mensagem
-        }).execute()
+        salvar_mensagem(conversation_id, "assistant", mensagem)
 
         return {
             "conversation_id": conversation_id,
@@ -188,12 +186,13 @@ if not produtos:
     # =========================
     # Montar contexto
     # =========================
+
     contexto = "\n".join([
         f"- {p['nome']}: {p['descricao']}"
         for p in produtos
     ])
 
-prompt = f"""
+    prompt = f"""
 Histórico da conversa:
 {historico_formatado}
 
@@ -210,7 +209,7 @@ Regras:
 - Inclua aviso de que não substitui orientação médica
 """
 
-resposta = openai_client.chat.completions.create(
+    resposta = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "Você é um especialista em bem-estar natural e atendimento acolhedor."},
@@ -219,23 +218,24 @@ resposta = openai_client.chat.completions.create(
         temperature=0.4
     )
 
-mensagem_final = resposta.choices[0].message.content.strip()
+    mensagem_final = resposta.choices[0].message.content.strip()
 
     # =========================
     # Salvar resposta
     # =========================
-supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": mensagem_final
-    }).execute()
 
-return {
+    salvar_mensagem(conversation_id, "assistant", mensagem_final)
+
+    return {
         "conversation_id": conversation_id,
         "found": True,
         "mensagem": mensagem_final,
         "produtos": produtos
     }
+
+# ============================
+# 🛠️ FUNÇÕES AUXILIARES
+# ============================
 
 def salvar_mensagem(conversation_id, role, content):
     supabase.table("messages").insert({
@@ -248,7 +248,6 @@ def criar_conversa(user_id):
     response = supabase.table("conversations").insert({
         "user_id": user_id
     }).execute()
-
     return response.data[0]["id"]
 
 def buscar_historico(conversation_id, limite=6):
@@ -261,5 +260,4 @@ def buscar_historico(conversation_id, limite=6):
         .limit(limite)
         .execute()
     )
-    
     return response.data
