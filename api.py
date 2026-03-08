@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from pinecone import Pinecone
@@ -7,6 +8,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import uuid
+import json
 from supabase import create_client, Client
 
 # ============================
@@ -80,7 +82,7 @@ class ChatRequest(BaseModel):
     top_k: int = 5
 
 # ============================
-# 🔍 ENDPOINT /chat
+# 🔍 ENDPOINT /chat (streaming)
 # ============================
 
 @app.post("/chat")
@@ -89,10 +91,11 @@ def chat(req: ChatRequest):
     pergunta = req.pergunta.strip()
 
     if len(pergunta) < 3:
-        return {
-            "found": False,
-            "mensagem": "Pode me explicar um pouco melhor sua dúvida?"
-        }
+        def resposta_curta():
+            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': '', 'produtos': []})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'token': 'Pode me explicar um pouco melhor sua dúvida?'})}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(resposta_curta(), media_type="text/event-stream")
 
     # =========================
     # Criar conversa se necessário
@@ -110,11 +113,6 @@ def chat(req: ChatRequest):
 
     # Buscar histórico ANTES de salvar nova mensagem
     historico = buscar_historico(conversation_id)
-
-    historico_formatado = "\n".join([
-        f"{msg['role']}: {msg['content']}"
-        for msg in historico
-    ])
 
     # Salvar pergunta do usuário
     salvar_mensagem(conversation_id, "user", pergunta)
@@ -165,73 +163,77 @@ def chat(req: ChatRequest):
     produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
     # =========================
-    # Fallback
+    # Montar mensagens para o modelo
     # =========================
 
-    if not produtos:
-        mensagem = (
-            "Não encontrei produtos específicos para isso, "
-            "mas posso te ajudar melhor se me contar um pouco mais "
-            "sobre o que está sentindo 😊"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Você é o Assistente Kaizen, especialista em bem-estar natural e saúde. "
+                "Responda de forma humanizada, acolhedora e clara. "
+                "Quando houver produtos relevantes, apresente-os com seus benefícios reais. "
+                "Você também pode responder dúvidas gerais sobre saúde e bem-estar, mesmo sem produtos específicos. "
+                "Nunca invente benefícios que não existam. "
+                "Sempre inclua um aviso de que suas respostas não substituem orientação médica profissional."
+            )
+        }
+    ]
+
+    # Adiciona histórico real da conversa no formato OpenAI
+    for msg in historico:
+        messages.append({
+            "role": msg["role"],
+            "content": msg["content"]
+        })
+
+    # Monta pergunta atual com contexto de produtos (se houver)
+    if produtos:
+        contexto = "\n".join([
+            f"- {p['nome']}: {p['descricao']}"
+            for p in produtos
+        ])
+        conteudo_usuario = (
+            f"{pergunta}\n\n"
+            f"[Produtos disponíveis no catálogo Kaizen relacionados a essa pergunta:\n{contexto}]"
+        )
+    else:
+        conteudo_usuario = pergunta
+
+    messages.append({
+        "role": "user",
+        "content": conteudo_usuario
+    })
+
+    # =========================
+    # Streaming da resposta
+    # =========================
+
+    def stream_resposta():
+        # Primeiro envia metadados (conversation_id e produtos encontrados)
+        yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'produtos': produtos})}\n\n"
+
+        resposta_completa = ""
+
+        stream = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.4,
+            stream=True
         )
 
-        salvar_mensagem(conversation_id, "assistant", mensagem)
+        for chunk in stream:
+            token = chunk.choices[0].delta.content
+            if token:
+                resposta_completa += token
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
-        return {
-            "conversation_id": conversation_id,
-            "found": False,
-            "mensagem": mensagem
-        }
+        # Salva a resposta completa no banco após o streaming terminar
+        salvar_mensagem(conversation_id, "assistant", resposta_completa)
 
-    # =========================
-    # Montar contexto
-    # =========================
+        yield "data: [DONE]\n\n"
 
-    contexto = "\n".join([
-        f"- {p['nome']}: {p['descricao']}"
-        for p in produtos
-    ])
-
-    prompt = f"""
-Histórico da conversa:
-{historico_formatado}
-
-Pergunta atual:
-"{pergunta}"
-
-Produtos disponíveis:
-{contexto}
-
-Regras:
-- Responda somente com base nos produtos listados
-- Não invente benefícios
-- Linguagem humanizada
-- Inclua aviso de que não substitui orientação médica
-"""
-
-    resposta = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Você é um especialista em bem-estar natural e atendimento acolhedor."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.4
-    )
-
-    mensagem_final = resposta.choices[0].message.content.strip()
-
-    # =========================
-    # Salvar resposta
-    # =========================
-
-    salvar_mensagem(conversation_id, "assistant", mensagem_final)
-
-    return {
-        "conversation_id": conversation_id,
-        "found": True,
-        "mensagem": mensagem_final,
-        "produtos": produtos
-    }
+    return StreamingResponse(stream_resposta(), media_type="text/event-stream")
 
 # ============================
 # 🛠️ FUNÇÕES AUXILIARES
@@ -250,11 +252,11 @@ def criar_conversa(user_id):
     }).execute()
     return response.data[0]["id"]
 
-def buscar_historico(conversation_id, limite=6):
+def buscar_historico(conversation_id, limite=10):
     response = (
         supabase
         .table("messages")
-        .select("*")
+        .select("role, content")
         .eq("conversation_id", conversation_id)
         .order("created_at", desc=False)
         .limit(limite)
