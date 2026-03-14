@@ -64,7 +64,7 @@ app.add_middleware(
 )
 
 # ============================
-# 📩 MODELO DE REQUEST
+# 📩 MODELOS DE REQUEST
 # ============================
 
 class ChatRequest(BaseModel):
@@ -73,8 +73,11 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     top_k: int = 5
 
+class RenomearRequest(BaseModel):
+    titulo: str
+
 # ============================
-# 🔍 ENDPOINT /chat (streaming)
+# 🔍 SYSTEM PROMPT
 # ============================
 
 SYSTEM_PROMPT = """Você é Kai, o assistente virtual da Kaizen — uma marca de produtos naturais voltada para saúde e bem-estar.
@@ -96,6 +99,10 @@ Como responder:
 
 Lembre-se: você está tendo uma conversa, não fazendo uma apresentação de produtos."""
 
+# ============================
+# 💬 ENDPOINT /chat (streaming)
+# ============================
+
 @app.post("/chat")
 def chat(req: ChatRequest):
 
@@ -108,27 +115,23 @@ def chat(req: ChatRequest):
             yield "data: [DONE]\n\n"
         return StreamingResponse(resposta_curta(), media_type="text/event-stream")
 
-    # =========================
-    # Criar conversa se necessário
-    # =========================
-
     conversation_id = req.conversation_id
     user_id = req.user_id
+    nova_conversa = False
 
     if not conversation_id or conversation_id == "string":
         conversation_id = str(uuid.uuid4())
+        nova_conversa = True
         supabase.table("conversations").insert({
             "id": conversation_id,
-            "user_id": user_id
+            "user_id": user_id,
+            "titulo": pergunta[:60]  # Título automático = primeira pergunta
         }).execute()
 
     historico = buscar_historico(conversation_id)
     salvar_mensagem(conversation_id, "user", pergunta)
 
-    # =========================
     # Embedding + Busca Pinecone
-    # =========================
-
     embedding = voyage.embed(
         texts=[pergunta],
         model="voyage-lite-01"
@@ -157,19 +160,12 @@ def chat(req: ChatRequest):
     produtos.sort(key=lambda x: x["score"], reverse=True)
     produtos = produtos[:MAX_PRODUTOS_RESPOSTA]
 
-    # =========================
-    # Montar mensagens
-    # =========================
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     for msg in historico:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     if produtos:
-        contexto = "\n".join([
-            f"- {p['nome']}: {p['descricao']}" for p in produtos
-        ])
+        contexto = "\n".join([f"- {p['nome']}: {p['descricao']}" for p in produtos])
         conteudo_usuario = (
             f"{pergunta}\n\n"
             f"[Contexto interno — produtos do catálogo Kaizen relacionados, mencione-os naturalmente se fizer sentido:\n{contexto}]"
@@ -179,15 +175,10 @@ def chat(req: ChatRequest):
 
     messages.append({"role": "user", "content": conteudo_usuario})
 
-    # =========================
-    # Streaming
-    # =========================
-
     def stream_resposta():
-        yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'produtos': produtos})}\n\n"
+        yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'nova_conversa': nova_conversa, 'titulo': pergunta[:60], 'produtos': produtos})}\n\n"
 
         resposta_completa = ""
-
         stream = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
@@ -205,6 +196,60 @@ def chat(req: ChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_resposta(), media_type="text/event-stream")
+
+# ============================
+# 📋 ENDPOINT GET /conversas/{user_id}
+# ============================
+
+@app.get("/conversas/{user_id}")
+def listar_conversas(user_id: str):
+    response = (
+        supabase
+        .table("conversations")
+        .select("id, titulo, created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(30)
+        .execute()
+    )
+    return {"conversas": response.data}
+
+# ============================
+# 📨 ENDPOINT GET /mensagens/{conversation_id}
+# ============================
+
+@app.get("/mensagens/{conversation_id}")
+def carregar_mensagens(conversation_id: str):
+    response = (
+        supabase
+        .table("messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return {"mensagens": response.data}
+
+# ============================
+# ✏️ ENDPOINT PATCH /conversas/{conversation_id}/titulo
+# ============================
+
+@app.patch("/conversas/{conversation_id}/titulo")
+def renomear_conversa(conversation_id: str, req: RenomearRequest):
+    supabase.table("conversations").update({
+        "titulo": req.titulo
+    }).eq("id", conversation_id).execute()
+    return {"ok": True}
+
+# ============================
+# 🗑️ ENDPOINT DELETE /conversas/{conversation_id}
+# ============================
+
+@app.delete("/conversas/{conversation_id}")
+def deletar_conversa(conversation_id: str):
+    supabase.table("messages").delete().eq("conversation_id", conversation_id).execute()
+    supabase.table("conversations").delete().eq("id", conversation_id).execute()
+    return {"ok": True}
 
 # ============================
 # 🛠️ FUNÇÕES AUXILIARES
