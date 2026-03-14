@@ -114,7 +114,13 @@ def chat(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'meta', 'conversation_id': '', 'produtos': []})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'token': 'Pode me contar um pouco mais? Quero entender melhor como posso te ajudar 😊'})}\n\n"
             yield "data: [DONE]\n\n"
-        return StreamingResponse(resposta_curta(), media_type="text/event-stream")
+        cors_headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Cache-Control": "no-cache",
+        }
+        return StreamingResponse(resposta_curta(), media_type="text/event-stream", headers=cors_headers)
 
     conversation_id = req.conversation_id
     user_id = req.user_id
@@ -196,7 +202,14 @@ def chat(req: ChatRequest):
         salvar_mensagem(conversation_id, "assistant", resposta_completa)
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(stream_resposta(), media_type="text/event-stream")
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Cache-Control": "no-cache",
+    }
+
+    return StreamingResponse(stream_resposta(), media_type="text/event-stream", headers=cors_headers)
 
 # ============================
 # 📋 ENDPOINT GET /conversas/{user_id}
